@@ -269,6 +269,7 @@ class EvaluationRepository(SaveLoadMixin):
 
     def dataset_metadata(self, dataset: str) -> dict:
         metadata = self._df_metadata[self._df_metadata["dataset"] == dataset]
+        print(metadata)
         return dict(zip(metadata.columns, metadata.values[0]))
 
     def dataset_info(self, dataset: str) -> dict:
@@ -315,6 +316,7 @@ class EvaluationRepository(SaveLoadMixin):
         datasets: List[str],
         configs: List[str] = None,
         *,
+        ensemble_method_name: str = "greedy ensemble selection",
         ensemble_size: int = 100,
         rank: bool = True,
         folds: Optional[List[int]] = None,
@@ -323,6 +325,7 @@ class EvaluationRepository(SaveLoadMixin):
         """
         :param datasets: list of datasets to compute errors on.
         :param configs: list of config to consider for ensembling. Uses all configs if None.
+        :param ensemble_method_name: Options include ["greedy ensemble selection, cmaes, cmaes with normalization, quality optimization, quality diversity optimization]
         :param ensemble_size: number of members to select with Caruana.
         :param rank: whether to return ranks or raw scores (e.g. RMSE). Ranks are computed over all base models and
         automl framework.
@@ -344,6 +347,7 @@ class EvaluationRepository(SaveLoadMixin):
         scorer = self._construct_ensemble_selection_config_scorer(
             tasks=tasks,
             ensemble_size=ensemble_size,
+            ensemble_method_name=ensemble_method_name,
             backend=backend,
         )
 
@@ -379,6 +383,7 @@ class EvaluationRepository(SaveLoadMixin):
 
     def _construct_ensemble_selection_config_scorer(self,
                                                     ensemble_size: int = 10,
+                                                    ensemble_method_name: str = "greedy ensemble selection",
                                                     backend='ray',
                                                     **kwargs) -> EnsembleSelectionConfigScorer:
         config_scorer = EnsembleSelectionConfigScorer.from_zsc(
@@ -386,6 +391,7 @@ class EvaluationRepository(SaveLoadMixin):
             zeroshot_gt=self._ground_truth,
             zeroshot_pred_proba=self._tabular_predictions,
             ensemble_size=ensemble_size,  # 100 is better, but 10 allows to simulate 10x faster
+            ensemble_method_name=ensemble_method_name,
             backend=backend,
             **kwargs,
         )

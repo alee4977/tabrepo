@@ -9,10 +9,10 @@ import pandas as pd
 import ray
 
 from autogluon.core.metrics import get_metric, Scorer
-from autogluon.core.models.greedy_ensemble.ensemble_selection import EnsembleSelection
+from autogluon.core.models.ensemble.ensemble_selection_techniques import EnsembleSelectionMethod
+
 from .configuration_list_scorer import ConfigurationListScorer
 from .ground_truth import GroundTruth
-
 from .simulation_context import ZeroshotSimulatorContext
 from .simulation_context import TabularModelPredictions
 from ..utils.rank_utils import RankScorer
@@ -21,7 +21,7 @@ from ..metrics import _fast_log_loss, _fast_roc_auc
 
 
 @ray.remote
-def compute_error_ray(config_scorer, configs: List[str], task: str) -> (float, dict):
+def compute_error_ray(config_scorer, configs: List[str], task: str) -> (float, dict): # type: ignore
     error, ensemble_weights = config_scorer.evaluate_task(task=task, models=configs)
     return error, ensemble_weights
 
@@ -31,7 +31,7 @@ class EnsembleScorer:
                  zeroshot_pp: TabularModelPredictions,
                  zeroshot_gt: GroundTruth,
                  task_metrics_metadata,
-                 ensemble_method: callable = EnsembleSelection,
+                 ensemble_method: callable = EnsembleSelectionMethod,
                  ensemble_method_kwargs: dict = None,
                  proxy_fit_metric_map: dict = None,
                  use_fast_metrics: bool = True,
@@ -43,8 +43,9 @@ class EnsembleScorer:
         ensemble_method_kwargs = copy.deepcopy(ensemble_method_kwargs)
         if "ensemble_size" not in ensemble_method_kwargs:
             ensemble_method_kwargs["ensemble_size"] = 100
-        self.ensemble_method: callable = ensemble_method
+        
         self.ensemble_method_kwargs = ensemble_method_kwargs
+        self.ensemble_method = EnsembleSelectionMethod
         self.zeroshot_pp: TabularModelPredictions = zeroshot_pp
         self.zeroshot_gt = zeroshot_gt
         self.task_metrics_metadata = task_metrics_metadata
@@ -131,10 +132,16 @@ class EnsembleScorer:
             y_test_pred = weighted_ensemble.predict(pred_test)
         else:
             y_test_pred = weighted_ensemble.predict_proba(pred_test)
+
+        if eval_metric.needs_pred:
+            y_val_pred = weighted_ensemble.predict(pred_val)
+        else:
+            y_val_pred = weighted_ensemble.predict_proba(pred_val)
+        
         err = eval_metric.error(y_test, y_test_pred)
+        err_val = eval_metric.error(y_val, y_val_pred)
 
         ensemble_weights: np.array = weighted_ensemble.weights_
-
         return err, ensemble_weights
 
 
@@ -148,8 +155,9 @@ class EnsembleSelectionConfigScorer(ConfigurationListScorer):
                  tid_to_dataset_name_dict: Dict[int, str],
                  task_metrics_metadata: Dict[int, Dict[str, str]],
                  ensemble_size=100,
+                 ensemble_method_name: str = "greedy ensemble selection",
                  ensemble_selection_kwargs=None,
-                 backend: str = 'native',
+                 backend: str = 'ray',
                  use_fast_metrics: bool = True,
                  proxy_fit_metric_map: Optional[Union[dict, str]] = None,  # TODO: Add unit test
                  ):
@@ -164,6 +172,7 @@ class EnsembleSelectionConfigScorer(ConfigurationListScorer):
         :param dataset_name_to_fold_dict: Mapping of dataset names to available folds. TODO: Remove?
         :param task_metrics_metadata: dictionary containing metric information and problem type for all tasks
         :param ensemble_size: The maximum ensemble selection iterations when fitting the ensemble. TODO: Remove?
+        :param ensemble_method_name: Options include ["greedy ensemble selection, cmaes, cmaes with normalization, quality optimization, quality diversity optimization]
         :param ensemble_selection_kwargs: kwargs to pass to the init of the ensemble selection model.
         :param max_fold: The maximum number of folds to consider for each dataset. TODO: Remove?
         :param backend: Options include ["native", "ray"].
@@ -185,6 +194,8 @@ class EnsembleSelectionConfigScorer(ConfigurationListScorer):
         self.ranker = ranker
         self.tid_to_dataset_name_dict = tid_to_dataset_name_dict
         self.ensemble_size = ensemble_size
+        assert ensemble_method_name in ["greedy ensemble selection", "cmaes", "cmaes with normalization", "quality optimization", "quality diversity optimization"]
+        self.ensemble_method_name = ensemble_method_name
         if ensemble_selection_kwargs is None:
             ensemble_selection_kwargs = {}
         self.ensemble_selection_kwargs = ensemble_selection_kwargs
@@ -200,6 +211,7 @@ class EnsembleSelectionConfigScorer(ConfigurationListScorer):
 
         ensemble_selection_kwargs = copy.deepcopy(ensemble_selection_kwargs)
         ensemble_selection_kwargs["ensemble_size"] = ensemble_size
+        ensemble_selection_kwargs["ensemble_selection_method"] = ensemble_method_name
 
         self.ensemble_scorer = EnsembleScorer(
             zeroshot_pp=zeroshot_pred_proba,
@@ -214,7 +226,6 @@ class EnsembleSelectionConfigScorer(ConfigurationListScorer):
     def from_zsc(cls, zeroshot_simulator_context: ZeroshotSimulatorContext, **kwargs):
         if 'tasks' not in kwargs:
             kwargs['tasks'] = zeroshot_simulator_context.get_tasks()
-
         dataset_to_tid_dict = zeroshot_simulator_context.dataset_to_tid_dict
         task_metrics_metadata = zeroshot_simulator_context.df_metrics
         task_metrics_metadata = {
