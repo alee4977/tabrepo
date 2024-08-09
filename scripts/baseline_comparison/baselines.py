@@ -37,7 +37,8 @@ class ResultRow:
     config_selected: list = None
     seed: int = None
 
-
+# This method evaluates all the ensembles created on the different task and fold combinations, and returns the errors,
+# normalized errors, times to train, and inference time as a row
 def evaluate_configs(
         repo: EvaluationRepository,
         rank_scorer,
@@ -49,6 +50,7 @@ def evaluate_configs(
         config_sampled: List[str] = None,
         folds: List[int] = range(10),
         seed: int = 0,
+        ensemble_method_name: str = "greedy_ensemble_selection",
 ) -> List[ResultRow]:
     """
 
@@ -61,6 +63,7 @@ def evaluate_configs(
     :param config_selected:
     :param config_sampled: the list of configurations that was seen, to count total runtime. Default to `config_selected`
     :param folds:
+    :param ensemble_method_name: ensemble selection technique to use
     :return: list of results for each fold in `folds` evaluated on task `tid` with `config_selected` configurations
     """
     if not config_sampled:
@@ -72,11 +75,13 @@ def evaluate_configs(
     # result depend on configuration order)
     config_selected = list(sorted(config_selected.copy()))
     dataset = repo.tid_to_dataset(tid=tid)
+    # print("This is going to enter the evaluate ensemble method from evaluate_baselines.py")
 
     metric_errors, ensemble_weights = repo.evaluate_ensemble(
         datasets=[dataset],
         configs=config_selected,
         ensemble_size=ensemble_size,
+        ensemble_method_name=ensemble_method_name,
         backend='native',
         folds=folds,
         rank=False,
@@ -144,6 +149,7 @@ def framework_default_results(repo: EvaluationRepository,
                               rank_scorer,
                               normalized_scorer,
                               engine: str,
+                              ensemble_method_name: str = "greedy_ensemble_selection",
                               **kwargs) -> List[ResultRow]:
     """
     :return: evaluations of default models (e.g. 'CatBoost_c1_BAG_L1') and the best/ensemble of all default models
@@ -160,6 +166,7 @@ def framework_default_results(repo: EvaluationRepository,
             tid=repo.dataset_to_tid(dataset_name),
             folds=range(n_eval_folds),
             method=name,
+            ensemble_method_name=ensemble_method_name
         )
 
     defaults = [
@@ -262,7 +269,6 @@ def framework_best_results(
             )
             rows
         return rows
-
     ensemble_sizes = [1, ensemble_size]
     list_rows = parallel_for(
         evaluate_tid,
@@ -320,7 +326,8 @@ def time_suffix(max_runtime: float) -> str:
 def zeroshot_name(
         n_portfolio: int = n_portfolios_default, n_ensemble: int = None, n_training_dataset: int = None,
         n_training_fold: int = None, n_training_config: int = None,
-        max_runtime: float = default_runtime, prefix: str = None, n_ensemble_in_name: bool = False
+        max_runtime: float = default_runtime, prefix: str = None, n_ensemble_in_name: bool = False,
+        ensemble_method_name: str = None
 ):
     """
     :return: name of the zeroshot method such as Zeroshot-N20-C40 if n_training_dataset or n_training_folds are not
@@ -341,6 +348,8 @@ def zeroshot_name(
         suffix += f"-E{n_ensemble}"
     if n_ensemble is None or n_ensemble > 1:
         suffix += " (ensemble)"
+    if ensemble_method_name is not None:
+        suffix += ensemble_method_name
     suffix += time_suffix(max_runtime)
     return f"Portfolio{prefix}{suffix}"
 
@@ -368,6 +377,7 @@ def zeroshot_results(
         rank_scorer,
         normalized_scorer,
         n_eval_folds: int,
+        ensemble_method_name: str = "greedy_ensemble_selection",
         n_ensembles: List[int] = [None],
         n_portfolios: List[int] = [n_portfolios_default],
         n_training_datasets: List[int] = [None],
@@ -382,6 +392,7 @@ def zeroshot_results(
     """
     :param dataset_names: list of dataset to use when fitting zeroshot
     :param n_eval_folds: number of folds to consider for evaluation
+    :param ensemble_method_name: ensemble selection technique to use
     :param n_ensembles: number of caruana sizes to consider
     :param n_portfolios: number of folds to use when fitting zeroshot
     :param n_training_datasets: number of dataset to use when fitting zeroshot
@@ -405,6 +416,7 @@ def zeroshot_results(
             n_training_config=n_training_config,
             prefix=method_prefix,
             n_ensemble_in_name=n_ensemble_in_name,
+            ensemble_method_name=ensemble_method_name,
         )
 
         rng = np.random.default_rng(seed=seed)
@@ -415,7 +427,10 @@ def zeroshot_results(
 
         # gets all tids that are possible available
         test_tid = repo.dataset_to_tid(test_dataset)
+        # print("test dataset from baselines.py: ", test_tid)
         available_tids = [repo.dataset_to_tid(dataset) for dataset in dataset_names if dataset != test_dataset]
+        # print("available_tids from baselines.py: ", available_tids)
+        # print("This is the number of datasets at the end", len(available_tids))
         rng.shuffle(available_tids)
         if n_training_dataset is None:
             n_training_dataset = len(available_tids)
@@ -438,7 +453,10 @@ def zeroshot_results(
         if max_runtime:
             configs = filter_configurations_above_budget(repo, test_tid, configs, max_runtime)
 
+        # df_rank has a shape (1308, 600), meaning it gives the ranks for all configurations across all tasks
         df_rank = df_rank.copy().loc[configs]
+       #  print(df_rank)
+        # print("These are the n_training_folds ", n_training_fold)
 
         # collects all tasks that are available
         train_tasks = []
@@ -476,9 +494,11 @@ def zeroshot_results(
             method=method_name,
             folds=range(n_eval_folds),
             seed=seed,
+            ensemble_method_name=ensemble_method_name,
         )
 
     dd = repo._zeroshot_context.df_configs_ranked
+
     # df_rank = dd.pivot_table(index="framework", columns="dataset", values="score_val").rank()
     # TODO use normalized scores
     df_rank = dd.pivot_table(index="framework", columns="task", values="metric_error").rank(ascending=False)
