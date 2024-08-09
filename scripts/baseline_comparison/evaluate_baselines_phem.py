@@ -13,9 +13,6 @@ from tabrepo.utils import catchtime
 
 from scripts import load_context, show_repository_stats
 from scripts.baseline_comparison.baselines import (
-    automl_results,
-    framework_default_results,
-    framework_best_results,
     zeroshot_results,
     default_ensemble_size,
     n_portfolios_default,
